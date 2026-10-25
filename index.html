@@ -589,8 +589,12 @@ function viewProgress(){
       ${(w.entries||[]).map(e=>`<div class="muted" style="margin-top:4px">${esc(e.name)}: ${(e.sets||[]).length?e.sets.map(s=>s.lb+'×'+s.reps).join(' · '):'not logged'}</div>`).join('')}
     </div><hr>`).join('')}</div>`;
 }
-
+  
 /* ===================== VIEW: COACH ===================== */
+const KEYSTORE='fitwithsanta.apikey';
+const getKey=()=>{try{return localStorage.getItem(KEYSTORE)||'';}catch(e){return'';}};
+const setKey=v=>{try{localStorage.setItem(KEYSTORE,v);}catch(e){}};
+
 function coachContext(){
   const H=S.history.slice(-8).map(w=>({date:w.date,day:w.dayName,focus:w.name,minutes:w.minutes,
     exercises:(w.entries||[]).map(e=>({name:e.name,sets:(e.sets||[]).map(s=>s.lb+'x'+s.reps).join(', ')}))}));
@@ -599,11 +603,56 @@ function coachContext(){
   const prs=allPRs().slice(0,12).map(p=>({exercise:p.name,best:p.record.lb+'x'+p.record.reps,est1rm:Math.round(p.bestE1rm)}));
   return {today:todayISO(),profile:S.profile,thisWeek:plan,recentWorkouts:H,records:prs};
 }
+
+function systemPrompt(){
+return `You are Santa, the coach inside a personal workout app called "Fit with Santa".
+
+THE USER:
+- Experienced lifter, 20+ years training, full gym access
+- Goal: build muscle while losing fat
+- Trains Monday-Friday, 50-75 minutes per session
+- Split: Mon chest+abs, Tue back, Wed legs+abs, Thu shoulders, Fri arms+abs
+- ALL weights are in POUNDS (lb). Never use kilograms.
+
+HOW TO BEHAVE:
+- Warm, festive, lightly playful. An occasional "ho ho ho" is fine. Do not overdo the Christmas puns.
+- Be concise. 150 words or less unless genuinely asked for detail.
+- Talk like a knowledgeable coach to an experienced lifter. No beginner lectures.
+- Be honest. If their volume is low, their progress is flat, or an idea is bad, say so plainly.
+- Prioritise evidence: progressive overload, adequate volume, proximity to failure, recovery.
+- In a calorie deficit, retaining muscle is the realistic goal. Don't promise big gains.
+
+IMPORTANT LIMITS:
+- You CANNOT change the app. You cannot move, skip, or edit workouts.
+- When a change makes sense, tell them which button to use: "Postpone" or "Skip" on the Plan tab, "Swap exercise" or "Skip exercise" during a workout. The app always asks before changing their schedule.
+- Warm-up sets are logged separately and never count toward volume or records.
+- You are not a doctor. For pain, injury, or medical questions, recommend a professional.
+
+Their current data (JSON):
+${JSON.stringify(coachContext(),null,2)}`;
+}
+
 function viewCoach(){
   head('Coach','Santa · ask about your training');
+  if(!getKey()){
+    view.innerHTML=`<div class="card">
+      <h3>🎅 Connect Santa</h3>
+      <div class="muted">Paste an Anthropic API key to enable the coach. It's stored on this phone only — never sent to GitHub, never visible to anyone loading your site.</div>
+      <div class="field" style="margin-top:12px"><label>API key</label>
+        <input id="kIn" type="password" placeholder="sk-ant-..." autocomplete="off"></div>
+      <button class="btn-primary btn-full" onclick="saveKey()">Save key</button>
+      <hr>
+      <div class="muted"><strong>Where to get one:</strong><br>
+      1. Go to console.anthropic.com and sign in<br>
+      2. Billing → add credits (minimum $5)<br>
+      3. API Keys → Create Key → copy it<br><br>
+      Roughly 1–2¢ per message. $5 lasts months at normal use.</div>
+    </div>`;
+    return;
+  }
   const msgs=S.coach.length?S.coach.map(m=>
     `<div class="bubble ${m.role==='user'?'b-you':'b-santa'}">${esc(m.content)}</div>`).join('')
-    :`<div class="bubble b-santa">Ho ho ho! 🎅 I can see your plan, your logged sets and your records. Ask me things like "my shoulders are beat up, what should I change?" or "swap Wednesday for something shorter."
+    :`<div class="bubble b-santa">Ho ho ho! 🎅 I can see your plan, your logged sets and your records. Ask me things like "my shoulders are beat up, what should I change?" or "I've only got 35 minutes today."
 
 I give advice only — I can't move your workouts. You'll still tap Postpone or Swap yourself, and the app always asks before changing anything.</div>`;
   view.innerHTML=`
@@ -620,8 +669,17 @@ I give advice only — I can't move your workouts. You'll still tap Postpone or 
       <button class="btn-primary" style="flex:1" onclick="askCoach()">Send</button>
       <button class="btn-sm" onclick="S.coach=[];save();viewCoach()">Clear</button>
     </div>
-    <div class="muted" style="margin-top:8px">Your profile, this week's plan and recent sets are sent to the AI to answer. Nothing else leaves your phone.</div>
+    <div class="muted" style="margin-top:8px">Your profile, this week's plan and recent sets are sent to Anthropic to answer. Nothing else leaves your phone.
+    <button class="btn-sm btn-ghost" style="margin-top:6px" onclick="forgetKey()">Remove API key</button></div>
   </div>`;
+}
+function saveKey(){
+  const v=document.getElementById('kIn').value.trim();
+  if(!v.startsWith('sk-ant-')) return alert('That doesn\'t look like an Anthropic key — it should start with sk-ant-');
+  setKey(v); viewCoach();
+}
+function forgetKey(){
+  if(confirm('Remove the API key from this device?')){ setKey(''); viewCoach(); }
 }
 async function askCoach(preset){
   const box=document.getElementById('cIn');
@@ -631,17 +689,32 @@ async function askCoach(preset){
   if(box) box.value='';
   save(); viewCoach();
   const chat=document.getElementById('chat');
-  chat.insertAdjacentHTML('beforeend','<div class="bubble b-santa" id="think">Santa is thinking…</div>');
+  if(chat) chat.insertAdjacentHTML('beforeend','<div class="bubble b-santa" id="think">Santa is thinking…</div>');
   window.scrollTo(0,document.body.scrollHeight);
   try{
-    const r=await fetch('/api/coach',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({messages:S.coach.slice(-12),context:coachContext()})});
+    const r=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'content-type':'application/json',
+        'x-api-key':getKey(),
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true'
+      },
+      body:JSON.stringify({
+        model:'claude-sonnet-4-5',
+        max_tokens:700,
+        system:systemPrompt(),
+        messages:S.coach.slice(-12).filter(m=>m&&m.content)
+          .map(m=>({role:m.role==='user'?'user':'assistant',content:String(m.content)}))
+      })
+    });
     const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(data.error||('Server returned '+r.status));
-    S.coach.push({role:'assistant',content:data.text||'(no reply)'});
+    if(!r.ok) throw new Error((data.error&&data.error.message)||('API returned '+r.status));
+    const txt=(data.content||[]).map(b=>b.text||'').join('').trim();
+    S.coach.push({role:'assistant',content:txt||'(no reply)'});
   }catch(err){
-    S.coach.push({role:'assistant',content:'⚠️ Could not reach the coach.\n\n'+err.message+
-      '\n\nCheck that api/coach.js exists in your repo and ANTHROPIC_API_KEY is set in Vercel, then redeploy.'});
+    S.coach.push({role:'assistant',content:'⚠️ '+err.message+
+      '\n\nCommon causes: key is wrong or revoked, or your Anthropic credit balance is empty (console.anthropic.com → Billing).'});
   }
   if(S.coach.length>24) S.coach=S.coach.slice(-24);
   save(); viewCoach(); window.scrollTo(0,document.body.scrollHeight);
