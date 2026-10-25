@@ -701,7 +701,7 @@ async function askCoach(preset){
         'anthropic-dangerous-direct-browser-access':'true'
       },
       body:JSON.stringify({
-        model:'claude-sonnet-4-5',
+        model:'claude-sonnet-4-5-20250929',
         max_tokens:700,
         system:systemPrompt(),
         messages:S.coach.slice(-12).filter(m=>m&&m.content)
