@@ -590,136 +590,160 @@ function viewProgress(){
     </div><hr>`).join('')}</div>`;
 }
   
-/* ===================== VIEW: COACH ===================== */
-const KEYSTORE='fitwithsanta.apikey';
-const getKey=()=>{try{return localStorage.getItem(KEYSTORE)||'';}catch(e){return'';}};
-const setKey=v=>{try{localStorage.setItem(KEYSTORE,v);}catch(e){}};
+/* ===================== VIEW: COACH (no API needed) ===================== */
+function last7(){ const c=iso(new Date(Date.now()-6*864e5)); return S.history.filter(w=>w.date>=c); }
 
-function coachContext(){
-  const H=S.history.slice(-8).map(w=>({date:w.date,day:w.dayName,focus:w.name,minutes:w.minutes,
-    exercises:(w.entries||[]).map(e=>({name:e.name,sets:(e.sets||[]).map(s=>s.lb+'x'+s.reps).join(', ')}))}));
-  const plan=S.plan?S.plan.days.map(d=>({day:d.day,date:d.date,focus:d.name,status:d.status,
-    exercises:d.exercises.filter(e=>!e.skipped).map(e=>e.name)})):[];
-  const prs=allPRs().slice(0,12).map(p=>({exercise:p.name,best:p.record.lb+'x'+p.record.reps,est1rm:Math.round(p.bestE1rm)}));
-  return {today:todayISO(),profile:S.profile,thisWeek:plan,recentWorkouts:H,records:prs};
+function groupSets(ws){
+  const g={};
+  ws.forEach(w=>(w.entries||[]).forEach(e=>{
+    const k=e.group||'other'; g[k]=(g[k]||0)+(e.sets||[]).length; }));
+  return g;
+}
+function exerciseTrend(name){
+  const pts=[];
+  S.history.forEach(w=>{
+    const e=(w.entries||[]).find(x=>x.name===name);
+    if(!e) return;
+    let b=0; (e.sets||[]).forEach(s=>{const v=e1rm(s.lb,s.reps); if(v>b)b=v;});
+    if(b>0) pts.push({date:w.date,v:b});
+  });
+  return pts;
+}
+function analyse(){
+  const H=S.history, L=last7(), notes=[];
+  if(!H.length) return [{t:'Nothing logged yet',b:'Finish a workout and Santa will start reading your numbers.',k:'info'}];
+
+  // 1. consistency
+  const planned=S.plan?S.plan.days.filter(d=>d.status!=='skipped').length:5;
+  const doneThisWeek=S.plan?S.plan.days.filter(d=>d.status==='done').length:L.length;
+  if(doneThisWeek>=planned) notes.push({t:'Week complete 🎄',b:`All ${planned} planned sessions done. That's the whole game — consistency beats everything else on this list.`,k:'good'});
+  else notes.push({t:'This week so far',b:`${doneThisWeek} of ${planned} planned sessions complete. ${L.length} sessions logged in the last 7 days.`,k:'info'});
+
+  // 2. volume per muscle group
+  const g=groupSets(L);
+  const order=['chest','back','legs','shoulders','arms','abs'];
+  const low=[], high=[];
+  order.forEach(k=>{
+    const n=g[k]||0;
+    if(k==='abs') return;
+    if(n===0) low.push(`${k} (none)`);
+    else if(n<10) low.push(`${k} (${n})`);
+    else if(n>22) high.push(`${k} (${n})`);
+  });
+  const rows=order.filter(k=>g[k]).map(k=>`${k} ${g[k]}`).join(' · ');
+  notes.push({t:'Hard sets, last 7 days',b:(rows||'nothing logged')+'\n\nResearch generally supports ~10–20 hard sets per muscle per week for growth. Below that you may be leaving gains on the table; well above it mostly costs recovery.',k:'info'});
+  if(low.length) notes.push({t:'Under-trained this week',b:low.join(', ')+'. If a session got skipped, that explains it — worth catching up next week.',k:'warn'});
+  if(high.length) notes.push({t:'Running hot',b:high.join(', ')+'. High volume in a calorie deficit is where recovery usually breaks down first. Watch your sleep and performance.',k:'warn'});
+
+  // 3. stalled vs progressing lifts
+  const names=[...new Set(H.flatMap(w=>(w.entries||[]).map(e=>e.name)))];
+  const stalled=[], rising=[];
+  names.forEach(n=>{
+    const p=exerciseTrend(n);
+    if(p.length<3) return;
+    const recent=p.slice(-3);
+    const first=recent[0].v, last=recent[recent.length-1].v;
+    if(last>first*1.015) rising.push(n);
+    else if(last<=first*1.001) stalled.push(n);
+  });
+  if(rising.length) notes.push({t:'Moving up 📈',b:rising.slice(0,6).join(' · ')+'\n\nEstimated 1RM climbing across your last three sessions. Keep doing what you are doing.',k:'good'});
+  if(stalled.length) notes.push({t:'Flat for three sessions',b:stalled.slice(0,6).join(' · ')+'\n\nOptions: add a rep before adding weight, add one set, slow the eccentric, or check whether you are actually training close enough to failure. If several lifts stall at once that is usually recovery, not programming.',k:'warn'});
+
+  // 4. deficit reality check
+  const vols=(()=>{const bw={};H.forEach(w=>{const k=iso(mondayOf(w.date+'T00:00:00'));bw[k]=(bw[k]||0)+workoutVolume(w);});
+    return Object.keys(bw).sort().slice(-3).map(k=>bw[k]);})();
+  if(vols.length===3 && vols[2]<vols[0]*0.85)
+    notes.push({t:'Volume trending down',b:'Your weekly working volume has dropped noticeably over the last three weeks. In a deficit that is common and not automatically bad — but if it keeps sliding, muscle retention suffers. Consider a lighter deload week on purpose rather than drifting.',k:'warn'});
+
+  // 5. deload nudge
+  if(H.length>=20 && H.length%20<5)
+    notes.push({t:'Deload worth considering',b:'You have logged a lot of sessions recently. Five days a week in a deficit is demanding. A week at roughly two-thirds the sets, same weights, often pays for itself.',k:'info'});
+
+  // 6. records
+  const prs=allPRs();
+  if(prs.length) notes.push({t:'🏆 Top records',b:prs.slice(0,5).map(p=>`${p.name}: ${p.record.lb}×${p.record.reps} (est 1RM ${Math.round(p.bestE1rm)} lb)`).join('\n'),k:'good'});
+
+  notes.push({t:'One honest reminder',b:'Fat loss is driven by your calorie intake, not by how hard a session feels. Training keeps the muscle; the kitchen decides the scale. Nothing in this app can see your food.',k:'info'});
+  return notes;
 }
 
-function systemPrompt(){
-return `You are Santa, the coach inside a personal workout app called "Fit with Santa".
+function buildBriefing(){
+  const H=S.history.slice(-10), L=last7(), g=groupSets(L);
+  const plan=S.plan?S.plan.days.map(d=>`  ${d.day} (${d.date}) — ${d.name} [${d.status}]: ${d.exercises.filter(e=>!e.skipped).map(e=>e.name).join(', ')}`).join('\n'):'none';
+  const hist=H.map(w=>`  ${w.date} ${w.dayName} — ${w.name} (${w.minutes} min)\n`+
+    (w.entries||[]).map(e=>`     ${e.name}: ${(e.sets||[]).map(s=>s.lb+'lb x'+s.reps).join(', ')||'not logged'}`).join('\n')).join('\n');
+  const prs=allPRs().slice(0,12).map(p=>`  ${p.name}: ${p.record.lb}lb x ${p.record.reps} (est 1RM ${Math.round(p.bestE1rm)} lb)`).join('\n');
+  const grp=Object.entries(g).map(([k,v])=>`  ${k}: ${v} hard sets`).join('\n');
+  return `You are my strength coach. Be concise, honest and evidence-based. I am an experienced lifter — no beginner lectures. All weights are in POUNDS.
 
-THE USER:
-- Experienced lifter, 20+ years training, full gym access
-- Goal: build muscle while losing fat
-- Trains Monday-Friday, 50-75 minutes per session
-- Split: Mon chest+abs, Tue back, Wed legs+abs, Thu shoulders, Fri arms+abs
-- ALL weights are in POUNDS (lb). Never use kilograms.
+MY PROFILE
+  Goal: ${S.profile.goal}
+  Experience: ${S.profile.experience}
+  Equipment: ${S.profile.equipment}
+  Schedule: Monday–Friday, ${S.profile.minMinutes}–${S.profile.maxMinutes} min per session
+  Split: Mon chest+abs / Tue back / Wed legs+abs / Thu shoulders / Fri arms+abs
+  Today: ${todayISO()}
 
-HOW TO BEHAVE:
-- Warm, festive, lightly playful. An occasional "ho ho ho" is fine. Do not overdo the Christmas puns.
-- Be concise. 150 words or less unless genuinely asked for detail.
-- Talk like a knowledgeable coach to an experienced lifter. No beginner lectures.
-- Be honest. If their volume is low, their progress is flat, or an idea is bad, say so plainly.
-- Prioritise evidence: progressive overload, adequate volume, proximity to failure, recovery.
-- In a calorie deficit, retaining muscle is the realistic goal. Don't promise big gains.
+THIS WEEK'S PLAN
+${plan}
 
-IMPORTANT LIMITS:
-- You CANNOT change the app. You cannot move, skip, or edit workouts.
-- When a change makes sense, tell them which button to use: "Postpone" or "Skip" on the Plan tab, "Swap exercise" or "Skip exercise" during a workout. The app always asks before changing their schedule.
-- Warm-up sets are logged separately and never count toward volume or records.
-- You are not a doctor. For pain, injury, or medical questions, recommend a professional.
+HARD SETS BY MUSCLE GROUP, LAST 7 DAYS
+${grp||'  nothing logged'}
 
-Their current data (JSON):
-${JSON.stringify(coachContext(),null,2)}`;
+LAST ${H.length} WORKOUTS (working sets only — warm-ups excluded)
+${hist||'  none'}
+
+BEST LIFTS (estimated 1RM, Epley)
+${prs||'  none'}
+
+MY QUESTION:
+`;
 }
 
 function viewCoach(){
-  head('Coach','Santa · ask about your training');
-  if(!getKey()){
-    view.innerHTML=`<div class="card">
-      <h3>🎅 Connect Santa</h3>
-      <div class="muted">Paste an Anthropic API key to enable the coach. It's stored on this phone only — never sent to GitHub, never visible to anyone loading your site.</div>
-      <div class="field" style="margin-top:12px"><label>API key</label>
-        <input id="kIn" type="password" placeholder="sk-ant-..." autocomplete="off"></div>
-      <button class="btn-primary btn-full" onclick="saveKey()">Save key</button>
-      <hr>
-      <div class="muted"><strong>Where to get one:</strong><br>
-      1. Go to console.anthropic.com and sign in<br>
-      2. Billing → add credits (minimum $5)<br>
-      3. API Keys → Create Key → copy it<br><br>
-      Roughly 1–2¢ per message. $5 lasts months at normal use.</div>
-    </div>`;
-    return;
-  }
-  const msgs=S.coach.length?S.coach.map(m=>
-    `<div class="bubble ${m.role==='user'?'b-you':'b-santa'}">${esc(m.content)}</div>`).join('')
-    :`<div class="bubble b-santa">Ho ho ho! 🎅 I can see your plan, your logged sets and your records. Ask me things like "my shoulders are beat up, what should I change?" or "I've only got 35 minutes today."
-
-I give advice only — I can't move your workouts. You'll still tap Postpone or Swap yourself, and the app always asks before changing anything.</div>`;
+  head('Coach','Santa reads your logged numbers');
+  const notes=analyse();
+  const colour={good:'#e4f2e9',warn:'#fbf3df',info:'#fff'};
+  const edge={good:'#bfe3cd',warn:'#efe0b6',info:'var(--line)'};
   view.innerHTML=`
-  <div class="chipbar">
-    <button onclick="askCoach('Review my last week of training. What stands out?')">Review my week</button>
-    <button onclick="askCoach('I only have 35 minutes today. How should I cut today\\'s workout?')">Short on time</button>
-    <button onclick="askCoach('I feel run down. Should I deload?')">Feeling beat up</button>
-    <button onclick="askCoach('Am I progressing? Be honest.')">Am I progressing?</button>
+  <div class="card" style="background:#0f5132;color:#fff;border-color:#0f5132">
+    <h3 style="color:#fff">🎅 Santa's readout</h3>
+    <div style="color:#c8ddd2;font-size:13px">Built from your logged sets. No internet, no account, nothing leaves your phone.</div>
   </div>
-  <div id="chat">${msgs}</div>
-  <div class="card" style="margin-top:10px">
-    <div class="field"><textarea id="cIn" rows="3" placeholder="Ask Santa…"></textarea></div>
-    <div class="row">
-      <button class="btn-primary" style="flex:1" onclick="askCoach()">Send</button>
-      <button class="btn-sm" onclick="S.coach=[];save();viewCoach()">Clear</button>
+  ${notes.map(n=>`<div class="card" style="background:${colour[n.k]};border-color:${edge[n.k]}">
+    <h3>${esc(n.t)}</h3>
+    <div class="muted" style="white-space:pre-wrap;color:#4a5751">${esc(n.b)}</div></div>`).join('')}
+
+  <div class="card">
+    <h3>Ask a real AI</h3>
+    <div class="muted">Copies a full briefing — your plan, recent sets, records — to the clipboard. Paste it into the Claude app, add your question, done. No API key, no setup.</div>
+    <div class="chipbar" style="margin-top:12px">
+      <button onclick="copyBrief('Review my last week. What stands out?')">Review my week</button>
+      <button onclick="copyBrief('I only have 35 minutes today. What should I cut?')">Short on time</button>
+      <button onclick="copyBrief('I feel run down. Should I deload?')">Feeling beat up</button>
+      <button onclick="copyBrief('Am I actually progressing? Be honest.')">Am I progressing?</button>
     </div>
-    <div class="muted" style="margin-top:8px">Your profile, this week's plan and recent sets are sent to Anthropic to answer. Nothing else leaves your phone.
-    <button class="btn-sm btn-ghost" style="margin-top:6px" onclick="forgetKey()">Remove API key</button></div>
+    <button class="btn-primary btn-full" style="margin-top:4px" onclick="copyBrief('')">Copy briefing (blank question)</button>
+    <button class="btn-sm btn-full btn-ghost" style="margin-top:8px" onclick="showBrief()">Show it instead</button>
   </div>`;
 }
-function saveKey(){
-  const v=document.getElementById('kIn').value.trim();
-  if(!v.startsWith('sk-ant-')) return alert('That doesn\'t look like an Anthropic key — it should start with sk-ant-');
-  setKey(v); viewCoach();
+function copyBrief(q){
+  const txt=buildBriefing()+(q||'(type your question here)');
+  const done=()=>openModal(`<h3>Copied ✅</h3>
+    <div class="muted">Open the Claude app and paste. ${q?'Your question is already at the bottom.':'Type your question at the bottom.'}</div>
+    <button class="opt btn-primary" onclick="closeModal()">Got it</button>
+    <button class="opt btn-ghost" onclick="closeModal();showBrief()">Show the text</button>`);
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(done).catch(()=>showBrief(txt));
+  } else showBrief(txt);
 }
-function forgetKey(){
-  if(confirm('Remove the API key from this device?')){ setKey(''); viewCoach(); }
+function showBrief(txt){
+  const t=txt||buildBriefing()+'(type your question here)';
+  openModal(`<h3>Your briefing</h3>
+    <div class="muted">Tap into the box, select all, copy.</div>
+    <textarea rows="14" style="width:100%;font-size:12px;font-family:monospace;margin-top:10px">${esc(t)}</textarea>
+    <button class="opt btn-ghost" onclick="closeModal()">Close</button>`);
 }
-async function askCoach(preset){
-  const box=document.getElementById('cIn');
-  const text=(preset||(box?box.value:'')||'').trim();
-  if(!text) return;
-  S.coach.push({role:'user',content:text});
-  if(box) box.value='';
-  save(); viewCoach();
-  const chat=document.getElementById('chat');
-  if(chat) chat.insertAdjacentHTML('beforeend','<div class="bubble b-santa" id="think">Santa is thinking…</div>');
-  window.scrollTo(0,document.body.scrollHeight);
-  try{
-    const r=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{
-        'content-type':'application/json',
-        'x-api-key':getKey(),
-        'anthropic-version':'2023-06-01',
-        'anthropic-dangerous-direct-browser-access':'true'
-      },
-      body:JSON.stringify({
-        model:'claude-3-5-haiku-20241022',
-        max_tokens:700,
-        system:systemPrompt(),
-        messages:S.coach.slice(-12).filter(m=>m&&m.content)
-          .map(m=>({role:m.role==='user'?'user':'assistant',content:String(m.content)}))
-      })
-    });
-    const data=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error((data.error&&data.error.message)||('API returned '+r.status));
-    const txt=(data.content||[]).map(b=>b.text||'').join('').trim();
-    S.coach.push({role:'assistant',content:txt||'(no reply)'});
-  }catch(err){
-    S.coach.push({role:'assistant',content:'⚠️ '+err.message+
-      '\n\nCommon causes: key is wrong or revoked, or your Anthropic credit balance is empty (console.anthropic.com → Billing).'});
-  }
-  if(S.coach.length>24) S.coach=S.coach.slice(-24);
-  save(); viewCoach(); window.scrollTo(0,document.body.scrollHeight);
-}
-
 /* ===================== VIEW: PROFILE ===================== */
 function viewProfile(){
   const p=S.profile;
